@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#05070f" />
+<title>WebXR AR 积木 · 6DoF</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; background: #000;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-user-select: none; user-select: none;
+  }
+  canvas { display: block; position: fixed; inset: 0; }
+
+  /* ---------- DOM Overlay 根容器 ---------- */
+  #ui {
+    position: fixed; inset: 0; z-index: 10;
+    pointer-events: none;              /* 不拦截 3D 场景的点击 */
+  }
+  #ui button { pointer-events: auto; }
+
+  /* ---------- 开始页 ---------- */
+  #start {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 14px; padding: 28px; text-align: center;
+    background: radial-gradient(circle at 50% 25%, #1e2a4d 0%, #070a14 68%);
+    pointer-events: auto;
+  }
+  #start.hidden { display: none; }
+  #start h1 {
+    margin: 0; font-size: 30px; font-weight: 700; color: #fff;
+    letter-spacing: .04em;
+  }
+  #start p {
+    margin: 0; max-width: 340px; font-size: 15px;
+    line-height: 1.75; color: #9aa7c7;
+  }
+  #enterBtn {
+    margin-top: 10px; padding: 15px 46px;
+    font-size: 17px; font-weight: 600;
+    color: #06101f; border: none; border-radius: 999px; cursor: pointer;
+    background: linear-gradient(135deg, #7ef0c0, #5ea8ff);
+    box-shadow: 0 10px 30px rgba(94, 168, 255, .35);
+    transition: transform .12s ease;
+  }
+  #enterBtn:active { transform: scale(.96); }
+  #enterBtn:disabled { opacity: .45; box-shadow: none; cursor: not-allowed; }
+  .small { font-size: 13px; color: #ff9a9a; min-height: 18px; }
+
+  /* ---------- AR HUD ---------- */
+  #hud { position: absolute; inset: 0; pointer-events: none; }
+  #hud.hidden { display: none; }
+
+  #tip {
+    position: absolute;
+    top: max(18px, env(safe-area-inset-top));
+    left: 50%; transform: translateX(-50%);
+    padding: 8px 18px; border-radius: 999px;
+    background: rgba(0, 0, 0, .45);
+    border: 1px solid rgba(255, 255, 255, .12);
+    color: #fff; font-size: 13.5px; white-space: nowrap;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    pointer-events: none;
+  }
+
+  #toolbar {
+    position: absolute;
+    left: 50%; transform: translateX(-50%);
+    bottom: max(22px, env(safe-area-inset-bottom));
+    display: flex; align-items: center; gap: 10px;
+    max-width: calc(100vw - 24px);
+    padding: 9px 13px;
+    border-radius: 999px;
+    background: rgba(14, 18, 30, .62);
+    border: 1px solid rgba(255, 255, 255, .16);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, .45);
+    pointer-events: auto;
+  }
+
+  #colors {
+    display: flex; gap: 8px;
+    max-width: 46vw; overflow-x: auto;
+    scrollbar-width: none;
+  }
+  #colors::-webkit-scrollbar { display: none; }
+
+  .swatch {
+    flex: 0 0 auto;
+    width: 32px; height: 32px; padding: 0;
+    border-radius: 50%; cursor: pointer;
+    border: 2px solid rgba(255, 255, 255, .3);
+    transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+  }
+  .swatch.active {
+    border-color: #fff;
+    transform: scale(1.14);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, .45);
+  }
+
+  .tool-btn {
+    flex: 0 0 auto;
+    width: 40px; height: 40px;
+    display: grid; place-items: center;
+    font-size: 16px; color: #fff; cursor: pointer;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, .22);
+    background: rgba(255, 255, 255, .12);
+    transition: background .15s ease, transform .12s ease;
+  }
+  .tool-btn:active { background: rgba(255, 255, 255, .3); transform: scale(.94); }
+
+  @media (max-width: 380px) {
+    .swatch { width: 28px; height: 28px; }
+    .tool-btn { width: 36px; height: 36px; font-size: 15px; }
+    #toolbar { gap: 7px; padding: 8px 10px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <!-- 开始界面 -->
+  <div id="start">
+    <h1>🧱 AR 积木</h1>
+    <p>在真实空间里放置彩色方块，一块一块往上搭。<br>把手机对准地面或桌面，点击屏幕即可放置。</p>
+    <button id="enterBtn" type="button">进入 AR</button>
+    <p class="small" id="supportMsg"></p>
+  </div>
+
+  <!-- AR 内 HUD -->
+  <div id="hud" class="hidden">
+    <div id="tip">对准平面 · 轻触屏幕放置方块</div>
+    <div id="toolbar">
+      <div id="colors"></div>
+      <button class="tool-btn" id="undoBtn"  type="button" title="撤销">↩</button>
+      <button class="tool-btn" id="clearBtn" type="button" title="清空">🗑</button>
+      <button class="tool-btn" id="exitBtn"  type="button" title="退出">✕</button>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+ *  常量配置
+ * ============================================================ */
+const BLOCK      = 0.1;    // 方块边长（米）
+const MAX_BLOCKS = 200;    // 最多保留的方块数
+const COLORS     = ['#ff6b6b', '#ffd93d', '#6bcb77', '#4d96ff', '#b983ff', '#ffffff'];
+
+let currentColor = COLORS[0];
+
+/* ============================================================
+ *  全局对象
+ * ============================================================ */
+let renderer, scene, camera;
+let reticle;                 // 地面放置指示圈
+let ghost;                   // 半透明预览方块
+let blockGeo, edgeGeo;       // 共享几何体
+const blocks = [];           // 已放置的方块列表
+
+let xrSession      = null;
+let hitTestSource  = null;
+let refSpace       = null;
+let lastUiTouch    = 0;      // 用于区分"点按钮"和"点屏幕放置"
+
+const clock     = new THREE.Clock();
+const raycaster = new THREE.Raycaster();
+raycaster.far   = 6;
+
+// 复用临时对象，减少 GC
+const _m4 = new THREE.Matrix4();
+const _q  = new THREE.Quaternion();
+const _v1 = new THREE.Vector3();
+const _v2 = new THREE.Vector3();
+const _v3 = new THREE.Vector3();
+const _n  = new THREE.Vector3();
+
+const $ = (id) => document.getElementById(id);
+
+/* ============================================================
+ *  初始化
+ * ============================================================ */
+function init() {
+  // --- 渲染器：必须开启 xr，并设置参考空间为 local（6DoF 追踪）---
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  renderer.xr.setReferenceSpaceType('local');
+  document.body.appendChild(renderer.domElement);
+
+  // --- 场景 ---
+  scene  = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 40);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x8899cc, 2.4));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+  dirLight.position.set(0.6, 3, 1.2);
+  scene.add(dirLight);
+  const fillLight = new THREE.DirectionalLight(0xffffff, 0.9);
+  fillLight.position.set(-1.5, 1, -1);
+  scene.add(fillLight);
+
+  // --- 共享几何体 ---
+  blockGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
+  edgeGeo  = new THREE.EdgesGeometry(blockGeo);
+
+  // --- 放置指示圈（贴在地面上）---
+  reticle = new THREE.Mesh(
+    new THREE.RingGeometry(0.035, 0.045, 40).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.85, side: THREE.DoubleSide
+    })
+  );
+  reticle.visible = false;
+  scene.add(reticle);
+
+  // --- 预览方块 ---
+  ghost = new THREE.Mesh(
+    blockGeo,
+    new THREE.MeshBasicMaterial({
+      color: new THREE.Color(currentColor),
+      transparent: true, opacity: 0.35, depthWrite: false
+    })
+  );
+  ghost.add(new THREE.LineSegments(
+    edgeGeo,
+    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
+  ));
+  ghost.visible = false;
+  scene.add(ghost);
+
+  buildColorPicker();
+  bindUI();
+
+  window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', () => setTimeout(onResize, 200));
+
+  checkSupport();
+}
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+/* ============================================================
+ *  能力检测
+ * ============================================================ */
+function checkSupport() {
+  const msg = $('supportMsg');
+
+  if (!navigator.xr) {
+    msg.textContent = '当前浏览器不支持 WebXR，请使用 Android 版 Chrome / Edge 等支持 WebXR 的浏览器。';
+    $('enterBtn').disabled = true;
+    return;
+  }
+
+  navigator.xr.isSessionSupported('immersive-ar')
+    .then((ok) => {
+      if (!ok) {
+        msg.textContent = '当前设备不支持 AR 会话（immersive-ar），需要支持 ARCore 的 Android 设备。';
+        $('enterBtn').disabled = true;
+      }
+    })
+    .catch(() => {
+      msg.textContent = '无法检测 AR 支持情况。';
+    });
+}
+
+/* ============================================================
+ *  进入 AR 会话
+ * ============================================================ */
+async function startAR() {
+  const msg      = $('supportMsg');
+  const enterBtn = $('enterBtn');
+  msg.textContent = '';
+  enterBtn.disabled = true;
+
+  try {
+    xrSession = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['hit-test'],
+      optionalFeatures: ['dom-overlay', 'anchors', 'local-floor', 'light-estimation'],
+      domOverlay: { root: $('ui') }
+    });
+  } catch (err) {
+    msg.textContent = '启动 AR 失败：' + (err && err.message ? err.message : err);
+    enterBtn.disabled = false;
+    return;
+  }
+
+  xrSession.addEventListener('end', onSessionEnd);
+  xrSession.addEventListener('select', onSelect);
+
+  await renderer.xr.setSession(xrSession);
+
+  // 命中检测：从"观察者"视角发出的射线与真实平面求交
+  try {
+    const viewerSpace = await xrSession.requestReferenceSpace('viewer');
+    hitTestSource = await xrSession.requestHitTestSource({ space: viewerSpace });
+  } catch (err) {
+    console.warn('命中检测初始化失败：', err);
+  }
+
+  refSpace = renderer.xr.getReferenceSpace();
+
+  $('start').classList.add('hidden');
+  $('hud').classList.remove('hidden');
+
+  clock.start();
+  renderer.setAnimationLoop(render);
+}
+
+function onSessionEnd() {
+  renderer.setAnimationLoop(null);
+
+  xrSession     = null;
+  hitTestSource = null;
+  refSpace      = null;
+
+  reticle.visible = false;
+  ghost.visible   = false;
+
+  clearAll();
+
+  $('start').classList.remove('hidden');
+  $('hud').classList.add('hidden');
+  $('enterBtn').disabled = false;
+}
+
+/* ============================================================
+ *  主循环
+ * ============================================================ */
+function render(time, frame) {
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  // 方块"弹出"动画
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.userData.t < 1) {
+      b.userData.t = Math.min(1, b.userData.t + dt * 6);
+      const t = b.userData.t;
+      const e = 1 - Math.pow(1 - t, 3);              // ease-out cubic
+      b.scale.setScalar(0.4 + 0.6 * e + 0.08 * Math.sin(t * Math.PI));
+    }
+  }
+
+  if (frame) {
+    if (!refSpace) refSpace = renderer.xr.getReferenceSpace();
+    updateGhost(frame);
+  }
+
+  renderer.render(scene, camera);
+}
+
+/* ============================================================
+ *  更新预览位置
+ *  优先级：射线打到已有方块 → 放到它相邻格子；否则用平面命中检测
+ * ============================================================ */
+function updateGhost(frame) {
+  if (!refSpace) {
+    reticle.visible = false;
+    ghost.visible   = false;
+    return;
+  }
+
+  // 6DoF 头部姿态（手机 AR 中即设备位置与朝向）
+  const viewerPose = frame.getViewerPose(refSpace);
+  if (!viewerPose) {
+    reticle.visible = false;
+    ghost.visible   = false;
+    return;
+  }
+
+  const tr = viewerPose.transform;
+  _v1.set(tr.position.x, tr.position.y, tr.position.z);
+  _q.set(tr.orientation.x, tr.orientation.y, tr.orientation.z, tr.orientation.w);
+  _v2.set(0, 0, -1).applyQuaternion(_q);      // 视线方向
+  raycaster.set(_v1, _v2);
+
+  // ---- ① 先看视线是否打中已放置的方块 → 直接叠上去 ----
+  const blockHits = raycaster.intersectObjects(blocks, false);
+  if (blockHits.length > 0) {
+    const hit = blockHits[0];
+    _n.copy(hit.face.normal).applyQuaternion(hit.object.quaternion).normalize();
+    const target = hit.object.position.clone().addScaledVector(_n, BLOCK);
+    ghost.position.copy(findStackPosition(target));
+    ghost.visible   = true;
+    reticle.visible = false;
+    return;
+  }
+
+  // ---- ② 否则使用真实平面命中检测 ----
+  if (!hitTestSource) {
+    reticle.visible = false;
+    ghost.visible   = false;
+    return;
+  }
+
+  const results = frame.getHitTestResults(hitTestSource);
+  if (results.length === 0) {
+    reticle.visible = false;
+    ghost.visible   = false;
+    return;
+  }
+
+  const pose = results[0].getPose(refSpace);
+  if (!pose) {
+    reticle.visible = false;
+    ghost.visible   = false;
+    return;
+  }
+
+  _m4.fromArray(pose.transform.matrix);
+  reticle.position.setFromMatrixPosition(_m4);
+  reticle.quaternion.setFromRotationMatrix(_m4);
+  reticle.visible = true;
+
+  // 位姿矩阵的 Y 轴 = 平面法线
+  _n.set(0, 1, 0).applyQuaternion(reticle.quaternion).normalize();
+
+  const target = reticle.position.clone().addScaledVector(_n, BLOCK / 2);
+  ghost.position.copy(findStackPosition(target));
+  ghost.visible = true;
+}
+
+/* ============================================================
+ *  堆叠求解：把方块"抬"到不与其他方块重叠的位置
+ * ============================================================ */
+function findStackPosition(base) {
+  const p = base.clone();
+
+  // 1) 水平方向若有明显重叠，对齐到已有方块的 XZ，保证搭得整齐
+  for (let i = 0; i < blocks.length; i++) {
+    const b  = blocks[i];
+    const dx = Math.abs(p.x - b.position.x);
+    const dz = Math.abs(p.z - b.position.z);
+    if (dx < BLOCK * 0.6 && dz < BLOCK * 0.6) {
+      p.x = b.position.x;
+      p.z = b.position.z;
+      break;
+    }
+  }
+
+  // 2) 若与任何方块相交，就抬到它上面，直到不再碰撞
+  const eps = 1e-3;
+  for (let guard = 0; guard < 64; guard++) {
+    let hit = null;
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i];
+      if (Math.abs(p.x - b.position.x) < BLOCK - eps &&
+          Math.abs(p.y - b.position.y) < BLOCK - eps &&
+          Math.abs(p.z - b.position.z) < BLOCK - eps) {
+        hit = b;
+        break;
+      }
+    }
+    if (!hit) break;
+    p.y = hit.position.y + BLOCK;
+  }
+
+  return p;
+}
+
+/* ============================================================
+ *  创建 / 删除方块
+ * ============================================================ */
+function createBlock(position, color) {
+  const mat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color),
+    roughness: 0.42,
+    metalness: 0.08
+  });
+
+  const mesh = new THREE.Mesh(blockGeo, mat);
+  mesh.position.copy(position);
+  mesh.userData.t = 0;
+  mesh.scale.setScalar(0.4);
+
+  // 描边，让方块更有"积木感"
+  mesh.add(new THREE.LineSegments(
+    edgeGeo,
+    new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.28 })
+  ));
+
+  scene.add(mesh);
+  blocks.push(mesh);
+  return mesh;
+}
+
+function disposeBlock(b) {
+  scene.remove(b);
+  b.material.dispose();
+  b.children.forEach((c) => c.material.dispose());   // 几何体是共享的，不销毁
+}
+
+function undo() {
+  const b = blocks.pop();
+  if (b) disposeBlock(b);
+}
+
+function clearAll() {
+  while (blocks.length) disposeBlock(blocks.pop());
+}
+
+/* ============================================================
+ *  交互：点击屏幕放置
+ * ============================================================ */
+function onSelect() {
+  // 刚点过 UI 按钮，忽略这次 select
+  if (performance.now() - lastUiTouch < 350) return;
+  if (!ghost.visible) return;
+
+  createBlock(ghost.position.clone(), currentColor);
+
+  // 数量上限，超出后移除最早的
+  if (blocks.length > MAX_BLOCKS) disposeBlock(blocks.shift());
+
+  if (navigator.vibrate) {
+    try { navigator.vibrate(12); } catch (e) { /* ignore */ }
+  }
+}
+
+/* ============================================================
+ *  UI 绑定
+ * ============================================================ */
+function buildColorPicker() {
+  const wrap = $('colors');
+
+  COLORS.forEach((c, i) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'swatch' + (i === 0 ? ' active' : '');
+    btn.style.background = c;
+
+    btn.addEventListener('click', () => {
+      currentColor = c;
+      ghost.material.color.set(c);
+      Array.from(wrap.children).forEach((n) => n.classList.remove('active'));
+      btn.classList.add('active');
+    });
+
+    wrap.appendChild(btn);
+  });
+}
+
+function bindUI() {
+  $('enterBtn').addEventListener('click', startAR);
+  $('undoBtn').addEventListener('click', undo);
+  $('clearBtn').addEventListener('click', clearAll);
+  $('exitBtn').addEventListener('click', () => { if (xrSession) xrSession.end(); });
+
+  // 记录 UI 点击时间，避免点按钮时误放方块
+  document.addEventListener('pointerdown', (e) => {
+    if (e.target && e.target.closest && e.target.closest('button')) {
+      lastUiTouch = performance.now();
+    }
+  }, true);
+}
+
+/* ============================================================
+ *  启动
+ * ============================================================ */
+init();
+</script>
+</body>
+  </html>
